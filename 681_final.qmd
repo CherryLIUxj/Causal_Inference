@@ -1,0 +1,195 @@
+---
+title: "HW2"
+author: "Xingjian Liu"
+format: pdf
+editor: visual
+---
+
+```{r}
+groupon<-read.table("groupon.dat", header=TRUE)
+```
+
+```{r}
+groupon
+```
+
+```{r}
+has_MR<-groupon[,2]
+prom_length<-groupon[,3]
+price<-groupon[,4]
+discount_pct<-groupon[,5]
+coupon_duration<-groupon[,6]
+featured<-as.factor(groupon[,7])
+limited_supply<-groupon[,8]
+revenue_scaled<-groupon[,12]
+
+N<-710
+tX<-cbind(prom_length,price,discount_pct,coupon_duration,featured,limited_supply)
+```
+
+# 1)
+
+```{r}
+###Malhalanobis distance function###
+malhal<-function(x0,x1){
+return(
+sqrt(
+(x0-x1)%*%Siginv%*%(x0-x1)
+)
+)
+}
+```
+
+# 2)
+
+## a)
+
+### modeling propensity score:
+
+```{r}
+###Compute propensity score###
+propmod<-glm(has_MR~prom_length+price+discount_pct+coupon_duration+featured+limited_supply,family=("binomial"))
+
+propscore<-propmod$fitted.values
+```
+
+### stabilized weight estimate of ACE:
+
+```{r}
+w<-has_MR/propscore+(1-has_MR)/(1-propscore)
+
+library(survey)
+mydesign<-svydesign(ids=c(1:N),
+variables=data.frame(revenue_scaled,has_MR),weights=w)
+
+mymodel<-svyglm(revenue_scaled~has_MR,design=mydesign)
+summary(mymodel)
+```
+
+```{r}
+mymodel$coefficients['has_MR'] - 1.96*summary(mymodel)$coefficients["has_MR", "Std. Error"]
+```
+
+```{r}
+mymodel$coefficients['has_MR'] + 1.96*summary(mymodel)$coefficients["has_MR", "Std. Error"]
+```
+
+## b) one-to-one match
+
+```{r}
+###Sort data by propensity score###
+
+tX<-cbind(prom_length,price,discount_pct,coupon_duration,featured,limited_supply)
+
+X<-tX[order(propscore,decreasing=TRUE),]
+Y<-revenue_scaled[order(propscore,decreasing=TRUE)]
+BOOSTER<-has_MR[order(propscore,decreasing=TRUE)]
+X1<-X[(BOOSTER==1),]
+X0<-X[(BOOSTER==0),]
+Y1<-Y[(BOOSTER==1)]
+Y0<-Y[(BOOSTER==0)]
+```
+
+```{r}
+###Malhalanobis distance function###
+malhal<-function(x0,x1){
+return(
+sqrt(
+(x0-x1)%*%Siginv%*%(x0-x1)
+)
+)
+}
+```
+
+```{r}
+# with replacement
+mu1<-apply(X1,2,mean)
+mu0<-apply(X0,2,mean)
+Sig1<-cov(X1)
+Sig0<-cov(X0)
+Sig<-.5*Sig1+.5*Sig0
+Siginv<-solve(Sig)
+
+N1 <- sum(has_MR)
+N0 <- N - N1
+
+holdj <- rep(0, N1)
+holdtest <- rep(0, N1)
+X0 <- cbind(c(1:N0), X0) # Add indices to X0
+
+for (i in 1:N1) {
+  test <- rep(0, N0)
+  
+  # Compute Mahalanobis distance between X1[i, ] and all control samples
+  for (j in 1:N0) {
+    test[j] <- malhal(X0[j, 2:length(X0[1, ])], X1[i, ])
+  }
+  
+  # Find the closest match in X0 (index of the minimum distance)
+  holdtest[i] <- min(test)
+  holdj[i] <- X0[order(test)[1], 1]
+}
+
+# Calculate ATE
+tau <- mean(Y1 - Y0[holdj])
+
+# Calculate standard error of the estimator
+vtau <- sum((Y1 - Y0[holdj] - tau)^2) / (N1 * (N1 - 1))
+
+```
+
+```{r}
+tau
+```
+
+```{r}
+sqrt(vtau)
+```
+
+```{r}
+# without replacement
+mu1<-apply(X1,2,mean)
+mu0<-apply(X0,2,mean)
+Sig1<-cov(X1)
+Sig0<-cov(X0)
+Sig<-.5*Sig1+.5*Sig0
+Siginv<-solve(Sig)
+
+N1<-sum(has_MR)
+N0<-N-N1
+
+holdj<-rep(0,N1)
+holdtest<-rep(0,N1)
+X0<-cbind(c(1:N0),X0)
+nX0<-X0
+for(i in 1:N1){
+test<-rep(0,(N0-(i-1)))
+for(j in 1:(N0-(i-1))){
+test[j]<-malhal(nX0[j,2:length(nX0[1,])],X1[i,])
+}
+holdtest[i]<-min(test)
+holdj[i]<-nX0[order(test)[1],1]
+j<-order(test)[1]
+nX0<-nX0[-j,]
+}
+plot.ts(holdtest,main="MH Distance by Order of PS")
+```
+
+```{r}
+###Compute matched ACE for treated cases###
+tau<-mean(Y1-Y0[holdj])
+vtau<-sum((Y1-Y0[holdj]-tau)^2)/(N1*(N1-1))
+```
+
+```{r}
+tau
+```
+
+```{r}
+sqrt(vtau)
+```
+
+```{r}
+c(tau-1.96*sqrt(vtau),tau+1.96*sqrt(vtau))
+
+```
